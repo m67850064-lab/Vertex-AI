@@ -10,8 +10,19 @@ import { AI_SYSTEM_PROMPT } from "../lib/aiSystemPrompt";
 const router = Router();
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
-const PRIMARY_GEMINI_MODEL = "gemini-1.5-flash";
-const FALLBACK_GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_KEY_ENV_NAMES = [
+  "GEMINI_API_KEY_1",
+  "GEMINI_API_KEY_2",
+  "GEMINI_API_KEY_3",
+  "GEMINI_API_KEY_4",
+  "GEMINI_API_KEY",
+  "EXPO_PUBLIC_GEMINI_API_KEY",
+] as const;
+const GEMINI_MODEL_SEQUENCE = [
+  "gemini-1.5-flash",
+  "gemini-1.5-pro",
+  "gemini-2.5-flash",
+] as const;
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -26,8 +37,12 @@ const upload = multer({
   },
 });
 
-function getApiKey(): string | undefined {
-  return process.env.GEMINI_API_KEY || process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+function getGeminiApiKeys(): string[] {
+  const keys = GEMINI_KEY_ENV_NAMES.map((name) => process.env[name]?.trim()).filter(
+    (value): value is string => Boolean(value),
+  );
+
+  return [...new Set(keys)];
 }
 
 function isModelUnavailableError(error: unknown): boolean {
@@ -41,10 +56,80 @@ function isModelUnavailableError(error: unknown): boolean {
   );
 }
 
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function buildRequestParts(
+  file: Express.Multer.File | undefined,
+  text: string,
+  apiKey: string,
+): Promise<Part[]> {
+  const parts: Part[] = [];
+
+  if (file) {
+    if (file.mimetype.startsWith("image/")) {
+      parts.push({
+        inlineData: {
+          data: file.buffer.toString("base64"),
+          mimeType: file.mimetype,
+        },
+      } as Part);
+    } else {
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "gemini-upload-"));
+      const extension = file.mimetype === "text/plain" ? ".txt" : ".pdf";
+      const tmpPath = path.join(tmpDir, `upload${extension}`);
+      await fs.writeFile(tmpPath, file.buffer);
+
+      try {
+        const fileManager = new GoogleAIFileManager(apiKey);
+        const uploadResult = await fileManager.uploadFile(tmpPath, {
+          mimeType: file.mimetype,
+          displayName: file.originalname || `upload${extension}`,
+        });
+        parts.push({
+          fileData: {
+            fileUri: uploadResult.file.uri,
+            mimeType: file.mimetype,
+          },
+        } as Part);
+      } finally {
+        await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      }
+    }
+  }
+
+  if (text.trim()) {
+    parts.unshift({ text } as Part);
+  }
+
+  return parts;
+}
+
+async function generateWithKeyAndModel(
+  apiKey: string,
+  modelName: string,
+  file: Express.Multer.File | undefined,
+  text: string,
+): Promise<string> {
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const parts = await buildRequestParts(file, text, apiKey);
+  const model = genAI.getGenerativeModel({ model: modelName });
+  const result = await model.generateContent({
+    contents: [
+      { role: "user", parts: [{ text: AI_SYSTEM_PROMPT }] },
+      { role: "model", parts: [{ text: "Understood." }] },
+      { role: "user", parts },
+    ],
+  });
+
+  return result.response.text();
+}
+
 router.post("/gemini", upload.single("file"), async (req: Request, res: Response) => {
   try {
-    const apiKey = getApiKey();
-    if (!apiKey) {
+    const apiKeys = getGeminiApiKeys();
+    if (apiKeys.length === 0) {
       res.status(500).json({ error: "Gemini API key not configured" });
       return;
     }
@@ -52,75 +137,44 @@ router.post("/gemini", upload.single("file"), async (req: Request, res: Response
     const text = (req.body.text as string | undefined) ?? "";
     const file = req.file;
 
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const fileManager = new GoogleAIFileManager(apiKey);
-
-    const parts: Part[] = [];
-
-    if (file) {
-      if (file.mimetype.startsWith("image/")) {
-        parts.push({
-          inlineData: {
-            data: file.buffer.toString("base64"),
-            mimeType: file.mimetype,
-          },
-        } as Part);
-      } else {
-        const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "gemini-upload-"));
-        const extension = file.mimetype === "text/plain" ? ".txt" : ".pdf";
-        const tmpPath = path.join(tmpDir, `upload${extension}`);
-        await fs.writeFile(tmpPath, file.buffer);
-
-        try {
-          const uploadResult = await fileManager.uploadFile(tmpPath, {
-            mimeType: file.mimetype,
-            displayName: file.originalname || `upload${extension}`,
-          });
-          parts.push({
-            fileData: {
-              fileUri: uploadResult.file.uri,
-              mimeType: file.mimetype,
-            },
-          } as Part);
-        } finally {
-          await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-        }
-      }
-    }
-
-    if (text.trim()) {
-      parts.unshift({ text } as Part);
-    }
-
-    if (parts.length === 0) {
+    if (!file && !text.trim()) {
       res.status(400).json({ error: "No text or file provided" });
       return;
     }
 
-    const contents = [
-      { role: "user" as const, parts: [{ text: AI_SYSTEM_PROMPT }] },
-      { role: "model" as const, parts: [{ text: "Understood." }] },
-      { role: "user" as const, parts },
-    ];
+    let lastError: unknown = new Error("All Gemini keys and models failed");
 
-    let result;
-    try {
-      const model = genAI.getGenerativeModel({ model: PRIMARY_GEMINI_MODEL });
-      result = await model.generateContent({ contents });
-    } catch (error) {
-      if (!isModelUnavailableError(error)) throw error;
+    for (const modelName of GEMINI_MODEL_SEQUENCE) {
+      for (const [keyIndex, apiKey] of apiKeys.entries()) {
+        try {
+          const responseText = await generateWithKeyAndModel(
+            apiKey,
+            modelName,
+            file,
+            text,
+          );
+          res.json({ text: responseText, provider: "Gemini" });
+          return;
+        } catch (error) {
+          lastError = error;
+          console.warn(
+            `[Gemini] ${modelName} failed with key ${keyIndex + 1}/${apiKeys.length}; trying the next key/model`,
+            { error: getErrorMessage(error) },
+          );
 
-      console.warn(
-        `[Gemini] ${PRIMARY_GEMINI_MODEL} is unavailable; retrying with ${FALLBACK_GEMINI_MODEL}`,
-      );
-      const fallbackModel = genAI.getGenerativeModel({
-        model: FALLBACK_GEMINI_MODEL,
-      });
-      result = await fallbackModel.generateContent({ contents });
+          // Keep the loop moving for rate limits, high demand, quota exhaustion,
+          // unavailable models, invalid keys, and transient provider failures.
+          // A successful later key/model returns before an error reaches the client.
+          if (!isModelUnavailableError(error)) {
+            continue;
+          }
+        }
+      }
     }
 
-    const responseText = result.response.text();
-    res.json({ text: responseText, provider: "Gemini" });
+    res.status(502).json({
+      error: `Gemini request failed after trying ${apiKeys.length} key(s) across ${GEMINI_MODEL_SEQUENCE.length} model(s): ${getErrorMessage(lastError)}`,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: message });
