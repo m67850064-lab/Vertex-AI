@@ -11,11 +11,8 @@ const router = Router();
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
 const GEMINI_KEY_ENV_NAMES = [
-  "GEMINI_API_KEY_1",
-  "GEMINI_API_KEY_2",
-  "GEMINI_API_KEY_3",
-  "GEMINI_API_KEY_4",
   "GEMINI_API_KEY",
+  "VITE_GEMINI_API_KEY",
   "EXPO_PUBLIC_GEMINI_API_KEY",
 ] as const;
 const GEMINI_MODEL_SEQUENCE = [
@@ -43,17 +40,6 @@ function getGeminiApiKeys(): string[] {
   );
 
   return [...new Set(keys)];
-}
-
-function isModelUnavailableError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  const normalized = message.toLowerCase();
-  return (
-    normalized.includes("404") &&
-    (normalized.includes("not found") ||
-      normalized.includes("not supported") ||
-      normalized.includes("does not exist"))
-  );
 }
 
 function getErrorMessage(error: unknown): string {
@@ -165,9 +151,7 @@ router.post("/gemini", upload.single("file"), async (req: Request, res: Response
           // Keep the loop moving for rate limits, high demand, quota exhaustion,
           // unavailable models, invalid keys, and transient provider failures.
           // A successful later key/model returns before an error reaches the client.
-          if (!isModelUnavailableError(error)) {
-            continue;
-          }
+          continue;
         }
       }
     }
