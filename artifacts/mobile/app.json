@@ -8,13 +8,11 @@
     "scheme": "vertexai",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
-
     "splash": {
       "image": "./assets/images/icon.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
-
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.vertexai.app",
@@ -25,16 +23,13 @@
         "NSMicrophoneUsageDescription": "Vertex AI को voice input के लिए microphone access चाहिए।"
       }
     },
-
     "android": {
       "package": "com.vertexai.app",
       "versionCode": 1,
-
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#ffffff"
       },
-
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
@@ -44,16 +39,13 @@
         "android.permission.ACCESS_NETWORK_STATE",
         "android.permission.VIBRATE"
       ],
-
       "softwareKeyboardLayoutMode": "resize",
       "edgeToEdgeEnabled": true,
       "usesCleartextTraffic": false
     },
-
     "web": {
-      "favicon": "./assets/images/icon.png"
+      "favicon": "./assets/images/favicon.png"
     },
-
     "plugins": [
       [
         "expo-router",
@@ -63,7 +55,6 @@
       ],
       "expo-font",
       "expo-web-browser",
-
       [
         "expo-image-picker",
         {
@@ -72,21 +63,18 @@
           "microphonePermission": false
         }
       ],
-
       [
         "expo-av",
         {
           "microphonePermission": "Vertex AI को voice input के लिए microphone access चाहिए।"
         }
       ],
-
       [
         "expo-document-picker",
         {
           "iCloudContainerEnvironment": "Production"
         }
       ],
-
       [
         "expo-splash-screen",
         {
@@ -100,7 +88,6 @@
           }
         }
       ],
-
       [
         "react-native-google-mobile-ads",
         {
@@ -108,7 +95,6 @@
         }
       ]
     ],
-
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
