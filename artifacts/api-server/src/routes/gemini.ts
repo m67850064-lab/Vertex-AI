@@ -16,8 +16,6 @@ const GEMINI_KEY_ENV_NAMES = [
   "EXPO_PUBLIC_GEMINI_API_KEY",
 ] as const;
 const GEMINI_MODEL_SEQUENCE = [
-  "gemini-1.5-flash",
-  "gemini-1.5-pro",
   "gemini-2.5-flash",
 ] as const;
 

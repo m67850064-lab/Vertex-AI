@@ -11,7 +11,7 @@ import { AI_SYSTEM_PROMPT } from "../lib/aiSystemPrompt";
 
 const router = Router();
 
-const GEMINI_MODEL = "gemini-1.5-flash";
+const GEMINI_MODEL = "gemini-2.5-flash";
 const GROQ_MODEL = "llama-3.3-70b-versatile";
 const MISTRAL_MODEL = "mistral-small-latest";
 const OPENROUTER_MODEL = "openrouter/auto";
