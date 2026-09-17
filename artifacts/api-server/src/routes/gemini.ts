@@ -1,73 +1,73 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
-import { GoogleGenerativeAI, type Part } from "@google/generative-ai";
-import { GoogleAIFileManager } from "@google/generative-ai/server";
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
+import { logger } from "../lib/logger";
 import { AI_SYSTEM_PROMPT } from "../lib/aiSystemPrompt";
 
 const router = Router();
 
-const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
+const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const PROVIDER_TIMEOUT_MS = 10_000;
 
 type ProviderKind = "gemini" | "openai-compatible";
 
-interface ProviderConfig {
-  name: string;
-  kind: ProviderKind;
-  endpoint: string;
-  keyEnvNames: readonly string[];
-  models: readonly string[];
-  headers?: Record<string, string>;
+interface Provider {
+  readonly name: string;
+  readonly kind: ProviderKind;
+  readonly endpoint: string;
+  readonly envKey: string;
+  readonly model: string;
+  readonly headers?: Record<string, string>;
 }
 
-const GEMINI_MODEL_SEQUENCE = [
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemini-2.5-pro",
-] as const;
-
 /**
- * Ordered failover rotation. The VITE_* names are the canonical names for
- * this route; the existing aliases keep already-configured server deployments
- * working without copying or exposing any secret values.
+ * This order is deliberately explicit. Do not sort, parallelize, or add
+ * model/key rotation inside this list: one failed entry must move directly to
+ * the next entry.
  */
-const PROVIDER_ROTATION: readonly ProviderConfig[] = [
+const PROVIDERS: readonly Provider[] = [
   {
     name: "Gemini",
     kind: "gemini",
     endpoint: "https://generativelanguage.googleapis.com/v1beta",
-    keyEnvNames: ["VITE_GEMINI_API_KEY", "GEMINI_API_KEY", "EXPO_PUBLIC_GEMINI_API_KEY"],
-    models: GEMINI_MODEL_SEQUENCE,
+    envKey: "VITE_GEMINI_API_KEY",
+    model: "gemini-2.5-flash",
   },
   {
     name: "Groq",
     kind: "openai-compatible",
     endpoint: "https://api.groq.com/openai/v1/chat/completions",
-    keyEnvNames: ["VITE_GROQ_API_KEY", "GROQ_API_KEY", "EXPO_PUBLIC_GROQ_API_KEY"],
-    models: ["llama-3.3-70b-versatile", "openai/gpt-oss-120b"],
+    envKey: "VITE_GROQ_API_KEY",
+    model: "llama-3.3-70b-versatile",
   },
   {
     name: "Mistral",
     kind: "openai-compatible",
     endpoint: "https://api.mistral.ai/v1/chat/completions",
-    keyEnvNames: ["VITE_MISTRAL_API_KEY", "MISTRAL_API_KEY", "EXPO_PUBLIC_MISTRAL_API_KEY"],
-    models: ["mistral-small-latest", "mistral-medium-latest"],
+    envKey: "VITE_MISTRAL_API_KEY",
+    model: "mistral-small-latest",
   },
   {
     name: "OpenRouter",
     kind: "openai-compatible",
     endpoint: "https://openrouter.ai/api/v1/chat/completions",
-    keyEnvNames: ["VITE_OPENROUTER_API_KEY", "OPENROUTER_API_KEY", "EXPO_PUBLIC_OPENROUTER_API_KEY"],
-    models: ["openrouter/auto"],
+    envKey: "VITE_OPENROUTER_API_KEY",
+    model: "openrouter/auto",
     headers: {
       "HTTP-Referer": "https://vertex-ai-chat.app",
       "X-Title": "Vertex AI Chat",
     },
   },
 ];
+
+const CONCISE_SYSTEM_PROMPT = [
+  AI_SYSTEM_PROMPT,
+  "Use the fewest words that fully answer the request.",
+  "Answer only the user's request; do not repeat it or add unrelated context.",
+  "Prefer one short paragraph or concise bullets.",
+  "Do not invent facts, citations, links, or missing details.",
+  "Ask at most one focused clarification question only when required to answer.",
+  "For simple questions, answer in one or two sentences.",
+].join(" ");
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -77,131 +77,158 @@ const upload = multer({
     if (allowed.test(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error("Unsupported file type. Only JPG, PNG, PDF and TXT are allowed."));
+      cb(new Error("Unsupported file type."));
     }
   },
 });
 
-function getProviderKeys(provider: ProviderConfig): string[] {
-  const keys = provider.keyEnvNames.flatMap((name) =>
-    (process.env[name] ?? "")
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean),
-  );
+type GeminiPart = {
+  text?: string;
+  inlineData?: {
+    data: string;
+    mimeType: string;
+  };
+};
 
-  return [...new Set(keys)];
+type CompatibleContent =
+  | string
+  | Array<
+      | { type: "text"; text: string }
+      | { type: "image_url"; image_url: { url: string } }
+    >;
+
+function getConfiguredKey(provider: Provider): string {
+  return process.env[provider.envKey]?.trim() ?? "";
 }
 
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
+function createAbortableRequest(
+  url: string,
+  init: RequestInit,
+): Promise<globalThis.Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), PROVIDER_TIMEOUT_MS);
 
-async function readProviderError(response: globalThis.Response): Promise<string> {
-  const body = await response.text().catch(() => "");
-  if (!body) return `HTTP ${response.status}`;
-
-  try {
-    const parsed = JSON.parse(body) as {
-      error?: { message?: string } | string;
-      message?: string;
-    };
-    const detail =
-      typeof parsed.error === "string"
-        ? parsed.error
-        : parsed.error?.message ?? parsed.message;
-    return `HTTP ${response.status}${detail ? `: ${detail}` : ""}`;
-  } catch {
-    return `HTTP ${response.status}: ${body.slice(0, 300)}`;
-  }
-}
-
-async function withTimeout<T>(operation: Promise<T>): Promise<T> {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(
-      () => reject(new Error(`request timed out after ${PROVIDER_TIMEOUT_MS}ms`)),
-      PROVIDER_TIMEOUT_MS,
-    );
+  return fetch(url, { ...init, signal: controller.signal }).finally(() => {
+    clearTimeout(timeoutId);
   });
+}
 
-  try {
-    return await Promise.race([operation, timeout]);
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
+function ensureSuccessfulResponse(response: globalThis.Response): void {
+  if (!response.ok) {
+    throw new Error(`Provider returned HTTP ${response.status}`);
   }
 }
 
-async function buildRequestParts(
+function extractText(payload: unknown): string {
+  const data = payload as {
+    text?: unknown;
+    candidates?: Array<{
+      content?: {
+        parts?: Array<{ text?: unknown }>;
+      };
+    }>;
+    choices?: Array<{
+      message?: {
+        content?: unknown;
+      };
+    }>;
+  };
+
+  if (typeof data.text === "string" && data.text.trim()) {
+    return data.text.trim();
+  }
+
+  const GeminiText = data.candidates?.[0]?.content?.parts
+    ?.map((part) => (typeof part.text === "string" ? part.text : ""))
+    .join("")
+    .trim();
+  if (GeminiText) return GeminiText;
+
+  const compatibleText = data.choices?.[0]?.message?.content;
+  if (typeof compatibleText === "string" && compatibleText.trim()) {
+    return compatibleText.trim();
+  }
+
+  if (Array.isArray(compatibleText)) {
+    const joined = compatibleText
+      .map((part) => {
+        if (
+          part &&
+          typeof part === "object" &&
+          "text" in part &&
+          typeof part.text === "string"
+        ) {
+          return part.text;
+        }
+        return "";
+      })
+      .join("")
+      .trim();
+    if (joined) return joined;
+  }
+
+  throw new Error("Provider returned an empty response.");
+}
+
+function buildGeminiParts(
   file: Express.Multer.File | undefined,
   text: string,
-  apiKey: string,
-): Promise<Part[]> {
-  const parts: Part[] = [];
-
-  if (file) {
-    if (file.mimetype.startsWith("image/")) {
-      parts.push({
-        inlineData: {
-          data: file.buffer.toString("base64"),
-          mimeType: file.mimetype,
-        },
-      } as Part);
-    } else {
-      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "gemini-upload-"));
-      const extension = file.mimetype === "text/plain" ? ".txt" : ".pdf";
-      const tmpPath = path.join(tmpDir, `upload${extension}`);
-      await fs.writeFile(tmpPath, file.buffer);
-
-      try {
-        const fileManager = new GoogleAIFileManager(apiKey);
-        const uploadResult = await fileManager.uploadFile(tmpPath, {
-          mimeType: file.mimetype,
-          displayName: file.originalname || `upload${extension}`,
-        });
-        parts.push({
-          fileData: {
-            fileUri: uploadResult.file.uri,
-            mimeType: file.mimetype,
-          },
-        } as Part);
-      } finally {
-        await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-      }
-    }
-  }
+): GeminiPart[] {
+  const parts: GeminiPart[] = [];
 
   if (text.trim()) {
-    parts.unshift({ text } as Part);
+    parts.push({ text: text.trim() });
+  }
+
+  if (file) {
+    parts.push({
+      inlineData: {
+        data: file.buffer.toString("base64"),
+        mimeType: file.mimetype,
+      },
+    });
   }
 
   return parts;
 }
 
-async function generateWithGemini(
+async function requestGemini(
+  provider: Provider,
   apiKey: string,
-  modelName: string,
   file: Express.Multer.File | undefined,
   text: string,
 ): Promise<string> {
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const parts = await buildRequestParts(file, text, apiKey);
-  const model = genAI.getGenerativeModel({ model: modelName });
-  const result = await model.generateContent({
-    contents: [
-      { role: "user", parts: [{ text: AI_SYSTEM_PROMPT }] },
-      { role: "model", parts: [{ text: "Understood." }] },
-      { role: "user", parts },
-    ],
-  });
+  const response = await createAbortableRequest(
+    `${provider.endpoint}/models/${provider.model}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: CONCISE_SYSTEM_PROMPT }],
+        },
+        contents: [
+          {
+            role: "user",
+            parts: buildGeminiParts(file, text),
+          },
+        ],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 768,
+        },
+      }),
+    },
+  );
 
-  return result.response.text();
+  ensureSuccessfulResponse(response);
+  return extractText(await response.json());
 }
 
-function buildCompatibleUserContent(
+function buildCompatibleContent(
   file: Express.Multer.File | undefined,
   text: string,
-): string | { type: string; text?: string; image_url?: { url: string } }[] {
+): CompatibleContent {
   const prompt = text.trim() || "Please analyze the attached file.";
   if (!file) return prompt;
 
@@ -221,17 +248,16 @@ function buildCompatibleUserContent(
     return `${prompt}\n\nAttached text:\n${file.buffer.toString("utf8")}`;
   }
 
-  return `${prompt}\n\nAn attached PDF named "${file.originalname || "document.pdf"}" was provided.`;
+  return `${prompt}\n\nAttached PDF: ${file.originalname || "document.pdf"}`;
 }
 
-async function generateWithCompatibleProvider(
-  provider: ProviderConfig,
+async function requestCompatibleProvider(
+  provider: Provider,
   apiKey: string,
-  modelName: string,
   file: Express.Multer.File | undefined,
   text: string,
 ): Promise<string> {
-  const response = await fetch(provider.endpoint, {
+  const response = await createAbortableRequest(provider.endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -239,113 +265,80 @@ async function generateWithCompatibleProvider(
       ...provider.headers,
     },
     body: JSON.stringify({
-      model: modelName,
+      model: provider.model,
       messages: [
-        { role: "system", content: AI_SYSTEM_PROMPT },
+        { role: "system", content: CONCISE_SYSTEM_PROMPT },
         {
           role: "user",
-          content: buildCompatibleUserContent(file, text),
+          content: buildCompatibleContent(file, text),
         },
       ],
-      temperature: 0.7,
-      max_tokens: 1024,
+      temperature: 0.2,
+      max_tokens: 768,
     }),
   });
 
-  if (!response.ok) {
-    throw new Error(await readProviderError(response));
-  }
-
-  const data = (await response.json()) as {
-    choices?: Array<{ message?: { content?: unknown } }>;
-  };
-  const responseText = data.choices?.[0]?.message?.content;
-  if (typeof responseText !== "string" || !responseText.trim()) {
-    throw new Error("empty response");
-  }
-
-  return responseText.trim();
+  ensureSuccessfulResponse(response);
+  return extractText(await response.json());
 }
 
-async function generateWithProvider(
-  provider: ProviderConfig,
+async function requestProvider(
+  provider: Provider,
   apiKey: string,
-  modelName: string,
   file: Express.Multer.File | undefined,
   text: string,
 ): Promise<string> {
   if (provider.kind === "gemini") {
-    return generateWithGemini(apiKey, modelName, file, text);
+    return requestGemini(provider, apiKey, file, text);
   }
 
-  return generateWithCompatibleProvider(provider, apiKey, modelName, file, text);
+  return requestCompatibleProvider(provider, apiKey, file, text);
 }
 
-router.post("/gemini", upload.single("file"), async (req: Request, res: Response) => {
-  try {
-    const text = (req.body.text as string | undefined) ?? "";
+router.post(
+  "/gemini",
+  upload.single("file"),
+  async (req: Request, res: Response) => {
+    const text = typeof req.body?.text === "string" ? req.body.text : "";
     const file = req.file;
 
     if (!file && !text.trim()) {
-      res.status(400).json({ error: "No text or file provided" });
+      res.status(400).json({ error: "No text or file provided." });
       return;
     }
 
-    let lastError: unknown = new Error("All configured providers and models failed");
-    let configuredKeyCount = 0;
-    let attemptCount = 0;
-
-    for (const provider of PROVIDER_ROTATION) {
-      const apiKeys = getProviderKeys(provider);
-      configuredKeyCount += apiKeys.length;
-
-      if (apiKeys.length === 0) {
-        console.warn(
-          `[Failover] ${provider.name} skipped: no configured key in ${provider.keyEnvNames[0]}`,
-        );
-        continue;
-      }
-
-      // Model-first ordering ensures every configured key gets the primary
-      // model before moving to that provider's next official model.
-      for (const modelName of provider.models) {
-        for (const [keyIndex, apiKey] of apiKeys.entries()) {
-          attemptCount += 1;
-          try {
-            const responseText = await withTimeout(
-              generateWithProvider(provider, apiKey, modelName, file, text),
-            );
-            res.json({
-              text: responseText,
-              provider: provider.name,
-              model: modelName,
-            });
-            return;
-          } catch (error) {
-            lastError = error;
-            console.warn(
-              `[Failover] ${provider.name}/${modelName} failed for key ${keyIndex + 1}/${apiKeys.length}; trying the next attempt`,
-              { error: getErrorMessage(error) },
-            );
-          }
+    /**
+     * Strict sequential fallback loop:
+     * - exactly one key/model per provider
+     * - no parallel requests
+     * - every failure is caught internally
+     * - only a successful provider returns early
+     */
+    for (const [providerIndex, provider] of PROVIDERS.entries()) {
+      try {
+        const apiKey = getConfiguredKey(provider);
+        if (!apiKey) {
+          throw new Error("Provider key is not configured.");
         }
+
+        const responseText = await requestProvider(provider, apiKey, file, text);
+        res.json({
+          text: responseText,
+          provider: provider.name,
+          model: provider.model,
+        });
+        return;
+      } catch {
+        // Never log provider errors, response bodies, model details, or keys.
+        logger.warn({ providerIndex });
       }
     }
 
-    if (configuredKeyCount === 0) {
-      res.status(500).json({
-        error: "No configured provider API keys found",
-      });
-      return;
-    }
-
+    // This is reachable only after every provider entry has failed.
     res.status(502).json({
-      error: `All configured provider attempts failed (${attemptCount} total): ${getErrorMessage(lastError)}`,
+      error: "All AI providers failed. Please try again.",
     });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    res.status(500).json({ error: message });
-  }
-});
+  },
+);
 
 export default router;
