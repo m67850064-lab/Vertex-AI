@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Animated,
   Image,
@@ -27,6 +28,7 @@ interface ChatInputProps {
 export function ChatInput({ onSend, onStop, disabled }: ChatInputProps) {
   const [text, setText] = useState('');
   const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const [attachment, setAttachment] = useState<ChatAttachment | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const colors = useColors();
@@ -37,7 +39,8 @@ export function ChatInput({ onSend, onStop, disabled }: ChatInputProps) {
   const menuAnim = useRef(new Animated.Value(0)).current;
   const menuHeight = useRef(new Animated.Value(0)).current;
 
-  const canSend = (!!text.trim() || !!attachment) && !disabled;
+  const canSend =
+    (!!text.trim() || !!attachment) && !disabled && !transcribing;
   const bottomPadding = Platform.OS === 'web' ? 16 : Math.max(insets.bottom, 12);
 
   useEffect(() => {
@@ -106,6 +109,8 @@ export function ChatInput({ onSend, onStop, disabled }: ChatInputProps) {
   }, [onStop]);
 
   const handleMicPress = useCallback(async () => {
+    if (transcribing) return;
+
     if (!isVoiceSupported()) {
       Alert.alert('Not supported', 'Voice input is not available on this device.');
       return;
@@ -118,9 +123,14 @@ export function ChatInput({ onSend, onStop, disabled }: ChatInputProps) {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
       }
       const { stopListening } = await import('@/lib/voiceInput');
-      await stopListening((transcript) => {
-        setText((prev) => (prev ? prev + ' ' + transcript : transcript));
-      });
+      setTranscribing(true);
+      try {
+        await stopListening((transcript) => {
+          setText((prev) => (prev ? prev + ' ' + transcript : transcript));
+        });
+      } finally {
+        setTranscribing(false);
+      }
     } else {
       if (Platform.OS !== 'web') {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -135,7 +145,7 @@ export function ChatInput({ onSend, onStop, disabled }: ChatInputProps) {
         setRecording(false);
       }
     }
-  }, [recording]);
+  }, [recording, transcribing]);
 
   const handlePlusPress = () => {
     setMenuOpen((prev) => !prev);
@@ -278,7 +288,13 @@ export function ChatInput({ onSend, onStop, disabled }: ChatInputProps) {
         <TextInput
           ref={inputRef}
           style={[styles.input, { color: colors.text }]}
-          placeholder={recording ? 'Listening...' : 'Ask anything...'}
+           placeholder={
+             recording
+               ? 'Listening...'
+               : transcribing
+                 ? 'Transcribing...'
+                 : 'Ask anything...'
+           }
           placeholderTextColor={recording ? '#ef4444' : colors.textMuted}
           value={text}
           onChangeText={setText}
@@ -287,22 +303,27 @@ export function ChatInput({ onSend, onStop, disabled }: ChatInputProps) {
           onSubmitEditing={Platform.OS === 'web' ? handleSend : undefined}
           blurOnSubmit={Platform.OS === 'web'}
           returnKeyType={Platform.OS === 'web' ? 'send' : 'default'}
-          editable={!recording}
+           editable={!recording && !transcribing}
         />
 
         {/* Mic button — hidden while AI is generating */}
-        {!disabled && (
+         {!disabled && (
           <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
             <TouchableOpacity
               onPress={handleMicPress}
+               disabled={transcribing}
               style={styles.iconBtn}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Icon
-                name={recording ? 'stop-circle' : 'mic-outline'}
-                size={22}
-                color={recording ? '#ef4444' : colors.textMuted}
-              />
+             >
+               {transcribing ? (
+                 <ActivityIndicator size="small" color={colors.brand} />
+               ) : (
+                 <Icon
+                   name={recording ? 'stop-circle' : 'mic-outline'}
+                   size={22}
+                   color={recording ? '#ef4444' : colors.textMuted}
+                 />
+               )}
             </TouchableOpacity>
           </Animated.View>
         )}

@@ -6,3 +6,4 @@
 - [Native build API configuration](native-build-api-config.md) — standalone mobile builds require a build-time HTTPS API URL; provider keys must remain on the backend, never in EXPO_PUBLIC client code.
 - [AdMob platform IDs](admob-platform-ids.md) — Android and iOS AdMob App IDs are platform-specific; never reuse an Android ID for iOS.
 - [Workspace Expo dependency installs](expo-workspace-dependency-installs.md) — install native Expo packages from the artifact workspace and verify versions with Expo’s compatibility check.
+- [Voice transcription routing](voice-transcription-routing.md) — keep transcription keys server-side; use ordered remote providers, then an explicit local endpoint only after remote failure.

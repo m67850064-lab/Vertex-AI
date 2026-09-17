@@ -23,13 +23,14 @@ export function isVoiceSupported(): boolean {
   if (Platform.OS === 'web') {
     return !!getWebRecognition();
   }
-  // Native: always supported via expo-av + Groq Whisper
+  // Native: recorded locally, then sent to the backend transcription rotation.
   return true;
 }
 
-// ─── Native recording (expo-av + Groq Whisper) ────────────────────────────────
+// ─── Native recording (expo-av + backend transcription rotation) ──────────────
 
 let nativeRecording: any = null;
+const TRANSCRIPTION_TIMEOUT_MS = 12_000;
 
 async function startNativeRecording(): Promise<void> {
   const { Audio } = await import('expo-av');
@@ -40,23 +41,25 @@ async function startNativeRecording(): Promise<void> {
   await Audio.setAudioModeAsync({
     allowsRecordingIOS: true,
     playsInSilentModeIOS: true,
+    shouldDuckAndroid: true,
+    playThroughEarpieceAndroid: false,
   });
   const rec = new Audio.Recording();
   await rec.prepareToRecordAsync({
     android: {
-      extension: '.mp4',
+      extension: '.m4a',
       outputFormat: 2, // MPEG_4
       audioEncoder: 3, // AAC
-      sampleRate: 44100,
-      numberOfChannels: 2,
-      bitRate: 128000,
+      sampleRate: 16000,
+      numberOfChannels: 1,
+      bitRate: 64000,
     },
     ios: {
       extension: '.m4a',
-      audioQuality: 127, // MAX
-      sampleRate: 44100,
-      numberOfChannels: 2,
-      bitRate: 128000,
+      audioQuality: 127, // HIGH
+      sampleRate: 16000,
+      numberOfChannels: 1,
+      bitRate: 64000,
       linearPCMBitDepth: 16,
       linearPCMIsBigEndian: false,
       linearPCMIsFloat: false,
@@ -79,17 +82,24 @@ async function stopNativeRecording(): Promise<string | null> {
 
     if (!uri) return null;
 
-    // Send audio to our backend. The Groq key stays server-side and is never
-    // bundled into an APK/AAB.
+    // Send audio to the backend. All provider keys stay server-side and the
+    // backend rotates Gemini, Groq Whisper, Mistral, and OpenRouter.
     const formData = new FormData();
     const filename = uri.split('/').pop() ?? 'audio.m4a';
     const ext = filename.split('.').pop() ?? 'm4a';
-    const mimeType = ext === 'mp4' ? 'audio/mp4' : ext === 'webm' ? 'audio/webm' : 'audio/m4a';
+    const mimeType =
+      ext === 'mp3'
+        ? 'audio/mpeg'
+        : ext === 'wav'
+          ? 'audio/wav'
+          : ext === 'webm'
+            ? 'audio/webm'
+            : 'audio/mp4';
 
     formData.append('file', { uri, name: filename, type: mimeType } as any);
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
+    const timeout = setTimeout(() => controller.abort(), TRANSCRIPTION_TIMEOUT_MS);
     let res: Response;
     try {
       res = await fetch(`${getApiBaseUrl()}/transcribe`, {
@@ -102,9 +112,13 @@ async function stopNativeRecording(): Promise<string | null> {
       clearTimeout(timeout);
     }
 
-    if (!res.ok) return null;
-    const json = await res.json();
-    return json.text ?? null;
+    if (!res.ok) {
+      return null;
+    }
+    const json = (await res.json()) as { text?: unknown };
+    return typeof json.text === 'string' && json.text.trim()
+      ? json.text.trim()
+      : null;
   } catch {
     nativeRecording = null;
     return null;
