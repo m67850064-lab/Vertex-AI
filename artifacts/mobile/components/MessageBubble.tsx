@@ -14,6 +14,9 @@ import { Icon } from './Icon';
 import { useColors } from '@/hooks/useColors';
 import { GeminiStar } from './GeminiStar';
 import type { ChatMessage } from '@/context/ConversationContext';
+import { MessageContent } from './MessageContent';
+import { GeneratedImage } from './GeneratedImage';
+import { PdfGenerationCard } from './PdfGenerationCard';
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -22,7 +25,11 @@ interface MessageBubbleProps {
 export function MessageBubble({ message }: MessageBubbleProps) {
   const colors = useColors();
   const isUser = message.role === 'user';
-  const isTyping = message.role === 'model' && message.text === '';
+  const isTyping =
+    message.role === 'model' &&
+    message.text === '' &&
+    !message.imagePrompt &&
+    !message.pdfPrompt;
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(8)).current;
@@ -58,11 +65,18 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                 )}
               </View>
             )}
-            {!!message.text && (
-              <Text style={[styles.userText, { color: colors.userBubbleText }]}>
-                {message.text}
-              </Text>
-            )}
+            {!!message.text &&
+              (message.text.includes('\n') ? (
+                <MessageContent
+                  text={message.text}
+                  forceMultilineCode
+                  textColor={colors.userBubbleText}
+                />
+              ) : (
+                <Text style={[styles.userText, { color: colors.userBubbleText }]}>
+                  {message.text}
+                </Text>
+              ))}
           </View>
           {/* Copy button below user bubble */}
           {!!message.text && <UserCopyButton text={message.text} />}
@@ -83,13 +97,22 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         <GeminiStar size={20} />
       </View>
       <View style={styles.modelContent}>
-        {isTyping ? (
+        {message.imagePrompt ? (
+          <GeneratedImage prompt={message.imagePrompt} />
+        ) : message.pdfPrompt ? (
+          <>
+            <PdfGenerationCard
+              status={message.pdfStatus ?? 'generating'}
+              error={message.pdfError}
+            />
+            {!!message.text && <MessageContent text={message.text} />}
+            {!!message.text && <ResponseActions text={message.text} />}
+          </>
+        ) : isTyping ? (
           <TypingDots />
         ) : (
           <>
-            <Text style={[styles.modelText, { color: colors.text }]}>
-              {message.text}
-            </Text>
+            <MessageContent text={message.text} />
             <ResponseActions text={message.text} />
           </>
         )}

@@ -64,6 +64,13 @@
         }
       ],
       [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow Vertex AI to access your photos so you can save generated images.",
+          "savePhotosPermission": "Allow Vertex AI to save generated images to your photo library."
+        }
+      ],
+      [
         "expo-av",
         {
           "microphonePermission": "Vertex AI को voice input के लिए microphone access चाहिए।"

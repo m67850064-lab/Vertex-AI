@@ -9,6 +9,11 @@ import React, {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { sendTextToServer, sendToBackend } from '@/lib/chatApi';
 import type { ChatAttachment } from '@/lib/fileUpload';
+import {
+  getImageGenerationPrompt,
+  getPdfGenerationPrompt,
+} from '@/lib/contentRequests';
+import { generateAndSharePdf } from '@/lib/nativeContent';
 
 const STORAGE_KEY = 'vertex-ai-conversations';
 
@@ -37,6 +42,10 @@ export interface ChatMessage {
   text: string;
   timestamp: number;
   attachment?: ChatAttachment;
+  imagePrompt?: string;
+  pdfPrompt?: string;
+  pdfStatus?: 'generating' | 'ready' | 'error';
+  pdfError?: string;
 }
 
 export interface Conversation {
@@ -174,6 +183,8 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
       if (!text.trim() && !attachment) return;
 
       const trimmedText = text.trim();
+      const imagePrompt = getImageGenerationPrompt(trimmedText);
+      const pdfPrompt = imagePrompt ? null : getPdfGenerationPrompt(trimmedText);
       const userMsg: ChatMessage = {
         id: uid(),
         role: 'user',
@@ -186,6 +197,9 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
         role: 'model',
         text: '',
         timestamp: Date.now(),
+        imagePrompt: imagePrompt ?? undefined,
+        pdfPrompt: pdfPrompt ?? undefined,
+        pdfStatus: pdfPrompt ? 'generating' : undefined,
       };
       const modelMsgId = modelMsg.id;
 
@@ -219,19 +233,63 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
       }
 
       try {
+        if (imagePrompt) {
+          // Image requests are rendered directly from Pollinations in the chat.
+          // Do not send them to a text model that could return a fake image URL.
+          return;
+        }
+
+        const history = (currentConv?.messages ?? [])
+          .filter((m) => m.text && m.role !== 'model' || m.text)
+          .slice(-10)
+          .map((m) => ({
+            role: (m.role === 'model' ? 'assistant' : 'user') as 'user' | 'assistant',
+            content: m.text,
+          }));
+
+        if (pdfPrompt) {
+          try {
+            const result = await sendTextToServer({ prompt: pdfPrompt, history });
+            await generateAndSharePdf(
+              pdfPrompt.slice(0, 80) || 'Vertex AI document',
+              result.text,
+            );
+
+            if (!mountedRef.current || generationIdRef.current !== genId) return;
+            setConversations((prev) =>
+              prev.map((c) => ({
+                ...c,
+                messages: c.messages.map((m) =>
+                  m.id === modelMsgId
+                    ? { ...m, text: result.text, pdfStatus: 'ready' }
+                    : m,
+                ),
+              })),
+            );
+          } catch (error) {
+            if (!mountedRef.current || generationIdRef.current !== genId) return;
+            const message =
+              error instanceof Error ? error.message : 'Could not create the PDF.';
+            setConversations((prev) =>
+              prev.map((c) => ({
+                ...c,
+                messages: c.messages.map((m) =>
+                  m.id === modelMsgId
+                    ? { ...m, pdfStatus: 'error', pdfError: message }
+                    : m,
+                ),
+              })),
+            );
+          }
+          return;
+        }
+
         let result: { text: string; provider?: string };
         if (attachment) {
           result = await sendToBackend({ text: trimmedText, attachment });
         } else {
           // Route text through server — server has fast internet, device only
           // needs one connection to Replit instead of 4 direct AI API calls.
-          const history = (currentConv?.messages ?? [])
-            .filter((m) => m.text && m.role !== 'model' || m.text)
-            .slice(-10) // last 5 exchanges for context
-            .map((m) => ({
-              role: (m.role === 'model' ? 'assistant' : 'user') as 'user' | 'assistant',
-              content: m.text,
-            }));
           result = await sendTextToServer({ prompt: trimmedText, history });
         }
 

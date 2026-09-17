@@ -53,6 +53,9 @@ const lightPalette = {
   // Borders & inputs
   border: '#dadce0',
   input: '#f8f9fd',
+  codeBackground: '#111827',
+  codeHeader: '#1f2937',
+  codeText: '#f3f4f6',
 
   // Legacy aliases
   tint: '#1a73e8',
@@ -112,6 +115,9 @@ const darkPalette = {
   // Borders & inputs
   border: '#2c2e40',
   input: '#1a1d29',
+  codeBackground: '#0b1020',
+  codeHeader: '#182033',
+  codeText: '#f3f4f6',
 
   // Legacy aliases
   tint: '#8ab4f8',
