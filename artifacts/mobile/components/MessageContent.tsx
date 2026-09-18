@@ -1,8 +1,9 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { useColors } from '@/hooks/useColors';
 import { parseMessageSegments } from '@/lib/codeBlockUtils';
 import { CodeBlock } from './CodeBlock';
+import { LinkifiedText } from './LinkifiedText';
 
 interface MessageContentProps {
   text: string;
@@ -28,12 +29,12 @@ export function MessageContent({
             language={segment.language ?? 'Plaintext'}
           />
         ) : (
-          <Text
+          <LinkifiedText
             key={`text-${index}`}
-            style={[styles.text, { color: textColor ?? colors.text }]}
+            text={segment.content}
+            textStyle={[styles.text, { color: textColor ?? colors.text }]}
           >
-            {segment.content}
-          </Text>
+          </LinkifiedText>
         ),
       )}
     </View>
