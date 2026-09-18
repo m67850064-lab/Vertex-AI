@@ -1,5 +1,5 @@
 import React from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native';
 import { useColors } from '@/hooks/useColors';
 
 interface PdfGenerationCardProps {
@@ -9,6 +9,7 @@ interface PdfGenerationCardProps {
 
 export function PdfGenerationCard({ status, error }: PdfGenerationCardProps) {
   const colors = useColors();
+  const isWeb = Platform.OS === 'web';
 
   return (
     <View style={[styles.card, { backgroundColor: colors.surfaceLight }]}>
@@ -17,14 +18,18 @@ export function PdfGenerationCard({ status, error }: PdfGenerationCardProps) {
           <ActivityIndicator color={colors.brand} />
           <Text style={[styles.title, { color: colors.text }]}>Creating PDF…</Text>
           <Text style={[styles.detail, { color: colors.textMuted }]}>
-            The native share sheet will open when it is ready.
+            {isWeb
+              ? 'A browser HTML download will start when it is ready.'
+              : 'The native share sheet will open when it is ready.'}
           </Text>
         </>
       ) : status === 'ready' ? (
         <>
           <Text style={[styles.title, { color: colors.text }]}>PDF ready</Text>
           <Text style={[styles.detail, { color: colors.textMuted }]}>
-            The PDF was created and shared from your device.
+            {isWeb
+              ? 'The HTML file was downloaded. Use Print → Save as PDF in your browser.'
+              : 'The PDF was created and shared from your device.'}
           </Text>
         </>
       ) : (

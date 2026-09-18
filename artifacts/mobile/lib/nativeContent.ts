@@ -30,8 +30,11 @@ export async function generateAndSharePdf(
   title: string,
   content: string,
 ): Promise<void> {
+  const html = buildPdfHtml(title, content);
+
   if (Platform.OS === 'web') {
-    throw new Error('PDF downloads are available on Android and iOS only.');
+    downloadHtmlForWeb(title, html);
+    return;
   }
 
   if (!(await Sharing.isAvailableAsync())) {
@@ -39,23 +42,7 @@ export async function generateAndSharePdf(
   }
 
   const result = await Print.printToFileAsync({
-    html: `
-      <!doctype html>
-      <html>
-        <head>
-          <meta name="viewport" content="width=device-width, initial-scale=1" />
-          <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 32px; color: #1f2937; }
-            h1 { font-size: 24px; margin: 0 0 20px; }
-            p { font-size: 15px; line-height: 1.6; white-space: pre-wrap; }
-          </style>
-        </head>
-        <body>
-          <h1>${escapeHtml(title)}</h1>
-          <p>${escapeHtml(content)}</p>
-        </body>
-      </html>
-    `,
+    html,
   });
 
   await Sharing.shareAsync(result.uri, {
@@ -63,6 +50,59 @@ export async function generateAndSharePdf(
     UTI: 'com.adobe.pdf',
     dialogTitle: 'Save or share your PDF',
   });
+}
+
+function buildPdfHtml(title: string, content: string): string {
+  return `
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>${escapeHtml(title)}</title>
+        <style>
+          @page { margin: 32px; }
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            padding: 32px;
+            color: #1f2937;
+          }
+          h1 { font-size: 24px; margin: 0 0 20px; }
+          p { font-size: 15px; line-height: 1.6; white-space: pre-wrap; }
+        </style>
+      </head>
+      <body>
+        <h1>${escapeHtml(title)}</h1>
+        <p>${escapeHtml(content)}</p>
+      </body>
+    </html>
+  `;
+}
+
+function downloadHtmlForWeb(title: string, html: string): void {
+  if (typeof document === 'undefined') return;
+
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `${toSafeFilename(title)}.html`;
+  anchor.style.display = 'none';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function toSafeFilename(value: string): string {
+  const filename = value
+    .trim()
+    .replace(/[^\p{L}\p{N}\s_-]/gu, '')
+    .replace(/\s+/g, '-')
+    .slice(0, 64);
+
+  return filename || 'vertex-ai-document';
 }
 
 export async function writeAndShareCode(

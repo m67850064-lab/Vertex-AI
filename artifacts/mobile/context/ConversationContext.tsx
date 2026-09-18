@@ -11,6 +11,7 @@ import { sendTextToServer, sendToBackend } from '@/lib/chatApi';
 import type { ChatAttachment } from '@/lib/fileUpload';
 import {
   getImageGenerationPrompt,
+  getInstantPdfContent,
   getPdfGenerationPrompt,
 } from '@/lib/contentRequests';
 import { generateAndSharePdf } from '@/lib/nativeContent';
@@ -185,6 +186,7 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
       const trimmedText = text.trim();
       const imagePrompt = getImageGenerationPrompt(trimmedText);
       const pdfPrompt = imagePrompt ? null : getPdfGenerationPrompt(trimmedText);
+      const instantPdfContent = pdfPrompt ? getInstantPdfContent(trimmedText) : null;
       const userMsg: ChatMessage = {
         id: uid(),
         role: 'user',
@@ -249,9 +251,12 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
 
         if (pdfPrompt) {
           try {
-            const result = await sendTextToServer({ prompt: pdfPrompt, history });
+            const result =
+              instantPdfContent !== null
+                ? { text: instantPdfContent }
+                : await sendTextToServer({ prompt: pdfPrompt, history });
             await generateAndSharePdf(
-              pdfPrompt.slice(0, 80) || 'Vertex AI document',
+              'Vertex AI document',
               result.text,
             );
 
