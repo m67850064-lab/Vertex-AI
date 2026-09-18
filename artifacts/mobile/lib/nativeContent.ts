@@ -30,6 +30,14 @@ export async function generateAndSharePdf(
   title: string,
   content: string,
 ): Promise<void> {
+  if (Platform.OS === 'web') {
+    throw new Error('PDF downloads are available on Android and iOS only.');
+  }
+
+  if (!(await Sharing.isAvailableAsync())) {
+    throw new Error('Native file sharing is unavailable on this device.');
+  }
+
   const result = await Print.printToFileAsync({
     html: `
       <!doctype html>
@@ -50,12 +58,9 @@ export async function generateAndSharePdf(
     `,
   });
 
-  if (!(await Sharing.isAvailableAsync())) {
-    throw new Error('Native file sharing is unavailable on this device.');
-  }
-
   await Sharing.shareAsync(result.uri, {
     mimeType: 'application/pdf',
+    UTI: 'com.adobe.pdf',
     dialogTitle: 'Save or share your PDF',
   });
 }
