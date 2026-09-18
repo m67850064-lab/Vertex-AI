@@ -1,4 +1,4 @@
-import { Alert, Platform } from 'react-native';
+import { Alert, Linking, Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library';
 import * as Print from 'expo-print';
@@ -6,6 +6,12 @@ import * as Sharing from 'expo-sharing';
 
 export function getPollinationsImageUrl(prompt: string): string {
   return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=768&height=768&nologo=true`;
+}
+
+export interface GeneratedPdfFile {
+  uri: string;
+  fileName: string;
+  isWeb: boolean;
 }
 
 export async function saveImageToGallery(imageUrl: string): Promise<void> {
@@ -29,12 +35,15 @@ export async function saveImageToGallery(imageUrl: string): Promise<void> {
 export async function generateAndSharePdf(
   title: string,
   content: string,
-): Promise<void> {
-  const html = buildPdfHtml(title, content);
+): Promise<GeneratedPdfFile> {
+  const cleanContent = getSafePdfContent(content);
+  const fileName = `${toSafeFilename(title)}.pdf`;
+  const html = buildPdfHtml(title, cleanContent);
 
   if (Platform.OS === 'web') {
-    downloadHtmlForWeb(title, html);
-    return;
+    const file = createWebPdfFile(title, html);
+    downloadPdfFile(file);
+    return file;
   }
 
   if (!(await Sharing.isAvailableAsync())) {
@@ -45,7 +54,62 @@ export async function generateAndSharePdf(
     html,
   });
 
-  await Sharing.shareAsync(result.uri, {
+  const file: GeneratedPdfFile = {
+    uri: result.uri,
+    fileName,
+    isWeb: false,
+  };
+  await sharePdfFile(file);
+  return file;
+}
+
+export async function downloadPdfFile(file: GeneratedPdfFile): Promise<void> {
+  if (file.isWeb) {
+    if (typeof document === 'undefined') return;
+
+    const anchor = document.createElement('a');
+    anchor.href = file.uri;
+    anchor.download = file.fileName.replace(/\.pdf$/i, '.html');
+    anchor.style.display = 'none';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    return;
+  }
+
+  await sharePdfFile(file);
+}
+
+export async function openPdfFile(file: GeneratedPdfFile): Promise<void> {
+  if (file.isWeb) {
+    if (typeof window === 'undefined') return;
+
+    const opened = window.open(file.uri, '_blank', 'noopener,noreferrer');
+    if (!opened) {
+      await downloadPdfFile(file);
+    }
+    return;
+  }
+
+  try {
+    const canOpen = await Linking.canOpenURL(file.uri);
+    if (canOpen) {
+      await Linking.openURL(file.uri);
+      return;
+    }
+  } catch {
+    // Fall back to the native share/save sheet below.
+  }
+
+  await sharePdfFile(file);
+}
+
+async function sharePdfFile(file: GeneratedPdfFile): Promise<void> {
+  if (!(await Sharing.isAvailableAsync())) {
+    throw new Error('Native file sharing is unavailable on this device.');
+  }
+
+  await Sharing.shareAsync(file.uri, {
     mimeType: 'application/pdf',
     UTI: 'com.adobe.pdf',
     dialogTitle: 'Save or share your PDF',
@@ -79,20 +143,14 @@ function buildPdfHtml(title: string, content: string): string {
   `;
 }
 
-function downloadHtmlForWeb(title: string, html: string): void {
-  if (typeof document === 'undefined') return;
-
+function createWebPdfFile(title: string, html: string): GeneratedPdfFile {
   const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
   const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = `${toSafeFilename(title)}.html`;
-  anchor.style.display = 'none';
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return {
+    uri: url,
+    fileName: `${toSafeFilename(title)}.pdf`,
+    isWeb: true,
+  };
 }
 
 function toSafeFilename(value: string): string {
@@ -103,6 +161,20 @@ function toSafeFilename(value: string): string {
     .slice(0, 64);
 
   return filename || 'vertex-ai-document';
+}
+
+function getSafePdfContent(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed || isPdfErrorMessage(trimmed)) {
+    throw new Error('The PDF content was unavailable, so no file was created.');
+  }
+  return trimmed;
+}
+
+function isPdfErrorMessage(content: string): boolean {
+  return /^(?:maaf|sorry|unable|could not|cannot|i can(?:not|'t))[\s\S]{0,240}\b(?:pdf|document|file)\b/i.test(
+    content,
+  );
 }
 
 export async function writeAndShareCode(

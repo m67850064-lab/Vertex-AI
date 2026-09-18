@@ -17,6 +17,11 @@ import type { ChatMessage } from '@/context/ConversationContext';
 import { MessageContent } from './MessageContent';
 import { GeneratedImage } from './GeneratedImage';
 import { PdfGenerationCard } from './PdfGenerationCard';
+import {
+  downloadPdfFile,
+  openPdfFile,
+  type GeneratedPdfFile,
+} from '@/lib/nativeContent';
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -104,6 +109,35 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             <PdfGenerationCard
               status={message.pdfStatus ?? 'generating'}
               error={message.pdfError}
+              file={
+                message.pdfUri
+                  ? ({
+                      uri: message.pdfUri,
+                      fileName: message.pdfFileName ?? 'vertex-ai-document.pdf',
+                      isWeb: message.pdfIsWeb ?? false,
+                    } satisfies GeneratedPdfFile)
+                  : undefined
+              }
+              onDownload={
+                message.pdfUri
+                  ? () =>
+                      downloadPdfFile({
+                        uri: message.pdfUri!,
+                        fileName: message.pdfFileName ?? 'vertex-ai-document.pdf',
+                        isWeb: message.pdfIsWeb ?? false,
+                      })
+                  : undefined
+              }
+              onOpen={
+                message.pdfUri
+                  ? () =>
+                      openPdfFile({
+                        uri: message.pdfUri!,
+                        fileName: message.pdfFileName ?? 'vertex-ai-document.pdf',
+                        isWeb: message.pdfIsWeb ?? false,
+                      })
+                  : undefined
+              }
             />
             {!!message.text && <MessageContent text={message.text} />}
             {!!message.text && <ResponseActions text={message.text} />}

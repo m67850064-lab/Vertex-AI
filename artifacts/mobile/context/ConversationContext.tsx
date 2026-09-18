@@ -47,6 +47,9 @@ export interface ChatMessage {
   pdfPrompt?: string;
   pdfStatus?: 'generating' | 'ready' | 'error';
   pdfError?: string;
+  pdfUri?: string;
+  pdfFileName?: string;
+  pdfIsWeb?: boolean;
 }
 
 export interface Conversation {
@@ -255,7 +258,7 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
               instantPdfContent !== null
                 ? { text: instantPdfContent }
                 : await sendTextToServer({ prompt: pdfPrompt, history });
-            await generateAndSharePdf(
+            const pdfFile = await generateAndSharePdf(
               'Vertex AI document',
               result.text,
             );
@@ -266,7 +269,14 @@ export function ConversationProvider({ children }: { children: React.ReactNode }
                 ...c,
                 messages: c.messages.map((m) =>
                   m.id === modelMsgId
-                    ? { ...m, text: result.text, pdfStatus: 'ready' }
+                      ? {
+                          ...m,
+                          text: result.text,
+                          pdfStatus: 'ready',
+                          pdfUri: pdfFile.uri,
+                          pdfFileName: pdfFile.fileName,
+                          pdfIsWeb: pdfFile.isWeb,
+                        }
                     : m,
                 ),
               })),
